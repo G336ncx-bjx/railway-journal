@@ -89,6 +89,7 @@ class RailwayTests(unittest.TestCase):
                 self.assertEqual(request('/api/records')['records'],[])
                 request('/api/restore',data)
                 self.assertEqual(request('/api/records')['records'][0]['price'],138.5)
+                self.assertEqual(request('/api/records')['records'][0]['id'],rid)
                 with self.assertRaises(HTTPError) as invalid:
                     request('/api/restore',{'version':1,'records':[{}],'stations':{}})
                 invalid.exception.close()

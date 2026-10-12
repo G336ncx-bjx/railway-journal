@@ -13,6 +13,15 @@ def migrate_local_data():
     if not getattr(sys,'frozen',False) or '--no-migrate' in sys.argv or app.DB.exists():
         return
     exe_dir=Path(sys.executable).resolve().parent
+    for name in ('cloud-secrets.bin','cloud-state.json'):
+        target=app.ROOT/'data'/name
+        if not target.exists():
+            for root in (exe_dir,exe_dir.parent):
+                original=root/'data'/name
+                if original.exists() and original.resolve()!=target.resolve():
+                    target.parent.mkdir(parents=True,exist_ok=True)
+                    target.write_bytes(original.read_bytes())
+                    break
     for root in (exe_dir,exe_dir.parent):
         old=root/'data'/'rides.sqlite3'
         if old.exists() and old.resolve()!=app.DB.resolve():
@@ -70,6 +79,7 @@ def main():
         return
     migrate_local_data()
     app.initialize()
+    app.CLOUD.start()
     for port in range(8765,8785):
         try:
             server=app.ThreadingHTTPServer(('127.0.0.1',port),app.Handler)
@@ -84,6 +94,7 @@ def main():
     try:
         open_window(url)
     finally:
+        app.CLOUD.stop()
         server.shutdown()
         server.server_close()
         worker.join()

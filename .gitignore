@@ -24,5 +24,6 @@ tmp*/
 .release-notes.md
 tests/check_packaged.cjs
 tests/check_packaged_native.cjs
+tests/check_cloud_package.cjs
 tests/close_test_windows.py
 tests/package-test-data/

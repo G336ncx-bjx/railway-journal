@@ -16,12 +16,14 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
+from cloudsync import CloudSync, CloudError
 
 ASSETS = Path(__file__).resolve().parent
 FROZEN = getattr(sys, 'frozen', False)
 ROOT = Path(os.environ.get('RAILWAY_JOURNAL_DATA_DIR') or (str(Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'RailwayJournal') if FROZEN else str(ASSETS))).resolve()
 DB = ROOT / 'data' / 'rides.sqlite3'
 SOURCE = ROOT.parent / '乘车记录.xlsx'
+DATA_LOCK = threading.RLock()
 NS = {'s': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
 FIELDS = ['date', 'train', 'type', 'bureau', 'operator', 'departure', 'depart_time', 'arrival', 'arrive_time', 'origin', 'destination', 'seat_type', 'seat', 'price', 'distance', 'receipt', 'receipt_path', 'notes']
 LABELS = ['日期', '车次', '列车类型', '路局', '担当局段', '出发站', '开点', '到达站', '到点', '始发站', '终到站', '席别', '席位', '价格', '里程', '车票/报销凭证', '票据路径', '备注']
@@ -135,8 +137,10 @@ def connect():
     finally:
         c.close()
 
-def insert(c, r):
-    return c.execute(f"INSERT INTO rides ({','.join(FIELDS)}) VALUES ({','.join('?' for _ in FIELDS)})", [r[k] for k in FIELDS]).lastrowid
+def insert(c, r, record_id=None):
+    fields = (['id'] if record_id is not None else []) + FIELDS
+    values = ([record_id] if record_id is not None else []) + [r[k] for k in FIELDS]
+    return c.execute(f"INSERT INTO rides ({','.join(fields)}) VALUES ({','.join('?' for _ in fields)})", values).lastrowid
 
 def initialize():
     DB.parent.mkdir(parents=True, exist_ok=True)
@@ -154,12 +158,39 @@ def initialize():
 
 def snapshot():
     with connect() as c:
+        c.execute('BEGIN')
         return {'version': 1, 'records': [dict(r) for r in c.execute('SELECT * FROM rides ORDER BY date DESC,id DESC')], 'stations': {r['name']:r['location'] for r in c.execute('SELECT * FROM stations')}}
 
 def backup():
     folder = ROOT / 'data' / 'backups'
     folder.mkdir(exist_ok=True)
     (folder / (datetime.now().strftime('%Y%m%d-%H%M%S-%f') + '.json')).write_text(json.dumps(snapshot(), ensure_ascii=False, indent=2), encoding='utf-8')
+
+def restore_snapshot(data):
+    if data.get('version') != 1 or not isinstance(data.get('records'),list) or not isinstance(data.get('stations'),dict):
+        raise ValueError('请选择本程序导出的 JSON 备份')
+    if len(data['records']) > 50000:
+        raise ValueError('备份记录数超出限制')
+    records = []
+    ids = set()
+    for i, raw in enumerate(data['records'],1):
+        record_id = raw.get('id',i)
+        if isinstance(record_id,bool) or not isinstance(record_id,int) or record_id <= 0 or record_id in ids:
+            raise ValueError('备份中存在重复或无效的记录编号')
+        ids.add(record_id)
+        records.append((record_id,normalize(raw)))
+    stations = {str(k):str(v) for k,v in data['stations'].items()}
+    with DATA_LOCK:
+        backup()
+        with connect() as c:
+            c.execute('DELETE FROM rides')
+            c.execute('DELETE FROM stations')
+            for record_id,r in records:
+                insert(c,r,record_id)
+            c.executemany('INSERT INTO stations VALUES (?,?)',stations.items())
+    return len(records)
+
+CLOUD = CloudSync(lambda:ROOT, snapshot, restore_snapshot, DATA_LOCK)
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -182,7 +213,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         if path == '/api/info':
-            return self.send({'app':'railway-journal','version':'1.0.2','data_dir':str(ROOT)})
+            return self.send({'app':'railway-journal','version':'1.1.0','data_dir':str(ROOT)})
+        if path == '/api/cloud/status':
+            try:
+                return self.send(CLOUD.status())
+            except (CloudError,ValueError,OSError):
+                return self.send({'configured':True,'phase':'error','message':'本机凭据无法读取，请重新连接清华云盘','auto':False,'server':'https://cloud.tsinghua.edu.cn','folder':'/铁道手记'})
         if path == '/api/records':
             data = snapshot()
             data['records'] = [enriched(r) for r in data['records']]
@@ -234,42 +270,46 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError('导入文件不得超过 10 MB')
             data = json.loads(self.rfile.read(size))
             path = urlparse(self.path).path
+            if path == '/api/cloud/configure':
+                result = CLOUD.configure(data)
+                CLOUD.schedule()
+                return self.send(result)
+            if path == '/api/cloud/sync':
+                return self.send(CLOUD.sync(data.get('mode','auto')))
+            if path == '/api/cloud/disconnect':
+                return self.send(CLOUD.disconnect())
             if path == '/api/save':
                 r = normalize(data)
                 rid = data.get('id')
-                backup()
-                with connect() as c:
-                    if rid:
-                        result = c.execute(f"UPDATE rides SET {','.join(k+'=?' for k in FIELDS)} WHERE id=?",[r[k] for k in FIELDS]+[int(rid)])
-                        if not result.rowcount:
-                            raise ValueError('记录不存在')
-                    else:
-                        rid = insert(c,r)
+                with DATA_LOCK:
+                    backup()
+                    with connect() as c:
+                        if rid:
+                            result = c.execute(f"UPDATE rides SET {','.join(k+'=?' for k in FIELDS)} WHERE id=?",[r[k] for k in FIELDS]+[int(rid)])
+                            if not result.rowcount:
+                                raise ValueError('记录不存在')
+                        else:
+                            rid = insert(c,r)
+                CLOUD.schedule()
                 return self.send({'id':rid})
             if path == '/api/delete':
-                backup()
-                with connect() as c:
-                    c.execute('DELETE FROM rides WHERE id=?',(int(data['id']),))
+                with DATA_LOCK:
+                    backup()
+                    with connect() as c:
+                        c.execute('DELETE FROM rides WHERE id=?',(int(data['id']),))
+                CLOUD.schedule()
                 return self.send({'ok':True})
             if path == '/api/restore':
-                if data.get('version') != 1 or not isinstance(data.get('records'),list) or not isinstance(data.get('stations'),dict):
-                    raise ValueError('请选择本程序导出的 JSON 备份')
-                records = [normalize(r) for r in data['records']]
-                stations = {str(k):str(v) for k,v in data['stations'].items()}
-                backup()
-                with connect() as c:
-                    c.execute('DELETE FROM rides')
-                    c.execute('DELETE FROM stations')
-                    for r in records:
-                        insert(c,r)
-                    c.executemany('INSERT INTO stations VALUES (?,?)',stations.items())
-                return self.send({'count':len(records)})
+                count = restore_snapshot(data)
+                CLOUD.schedule()
+                return self.send({'count':count})
             return self.send({'error':'未找到'},status=404)
-        except (ValueError, KeyError, TypeError, sqlite3.Error) as e:
+        except (ValueError, KeyError, TypeError, sqlite3.Error, CloudError) as e:
             self.send({'error':str(e)}, status=400)
 
 def main():
     initialize()
+    CLOUD.start()
     for port in range(8765,8785):
         try:
             server = ThreadingHTTPServer(('127.0.0.1',port),Handler)
@@ -288,6 +328,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        CLOUD.stop()
         server.server_close()
 
 if __name__ == '__main__':

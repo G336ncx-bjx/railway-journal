@@ -21,7 +21,7 @@ class DesktopTests(unittest.TestCase):
                 source.execute("INSERT INTO example VALUES ('existing')")
                 source.commit()
             target=root/'profile'/'data'/'rides.sqlite3'
-            with patch.object(sys,'frozen',True,create=True),patch.object(sys,'executable',str(root/'old'/'RailwayJournal.exe')),patch.object(app,'DB',target):
+            with patch.object(sys,'frozen',True,create=True),patch.object(sys,'executable',str(root/'old'/'RailwayJournal.exe')),patch.object(app,'ROOT',root/'profile'),patch.object(app,'DB',target):
                 desktop.migrate_local_data()
                 with closing(sqlite3.connect(target)) as database:
                     self.assertEqual(database.execute('SELECT value FROM example').fetchone()[0],'existing')

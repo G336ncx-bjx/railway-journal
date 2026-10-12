@@ -4,7 +4,7 @@ const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const num=(v,d=0)=>v==null?'—':Number(v).toLocaleString('zh-CN',{maximumFractionDigits:d});
 const time=m=>m==null?'—':`${Math.floor(m/60)}小时${m%60?m%60+'分':''}`;
 let records=[],locations={},page=1,editing=null,view='overview';
-const titles={overview:['旅程总览','把每一次出发，留在这里。'],records:['乘车记录','每一次出发与抵达，都有迹可循。'],years:['年度统计','看看这些年，在铁轨上走过多远。'],stations:['车站足迹','收藏每一个上车与下车的地方。'],backup:['数据与备份','让旅程记录一直陪着你。']};
+const titles={overview:['旅程总览','把每一次出发，留在这里。'],records:['乘车记录','每一次出发与抵达，都有迹可循。'],years:['年度统计','看看这些年，在铁轨上走过多远。'],stations:['车站足迹','收藏每一个上车与下车的地方。'],backup:['数据与云盘','让旅程记录一直陪着你。']};
 function toast(msg){$('toast').textContent=msg;$('toast').hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('toast').hidden=true,3500)}
 async function api(path,data){const r=await fetch(path,data===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const v=await r.json();if(!r.ok)throw Error(v.error||'操作失败');return v}
 async function load(){const d=await api('/api/records');records=d.records;locations=d.stations;const selected=$('year').value;const years=[...new Set(records.map(r=>r.date.slice(0,4)))].sort().reverse();$('year').innerHTML='<option value="">全部年份</option>'+years.map(y=>`<option>${esc(y)}</option>`).join('');$('year').value=years.includes(selected)?selected:'';const typ=$('type').value;$('type').innerHTML='<option value="">全部列车类型</option>'+[...new Set(records.map(r=>r.type).filter(Boolean))].sort().map(t=>`<option>${esc(t)}</option>`).join('');$('type').value=typ;$('navCount').textContent=records.length;render()}
@@ -49,3 +49,38 @@ $('rideForm').addEventListener('change',e=>{
 });
 $('restore').onclick=()=>$('restoreFile').click();$('restoreFile').onchange=async e=>{const file=e.target.files[0];if(!file)return;try{const data=JSON.parse(await file.text());if(!Array.isArray(data.records))throw Error('请选择完整 JSON 备份');if(confirm(`将用备份中的 ${data.records.length} 条记录替换当前数据。当前数据会自动备份。确认恢复？`)){await api('/api/restore',data);await load();toast('备份已恢复')}}catch(err){toast(err.message)}finally{e.target.value=''}};
 load().catch(e=>{toast('读取失败：'+e.message);$('scope').textContent='请确认程序窗口仍在运行，然后刷新页面。'});
+
+let cloudState=null,cloudBusy=false;
+const cloudPhaseLabels={disconnected:'尚未连接',ready:'已连接',syncing:'正在同步',synced:'已同步',conflict:'需要处理冲突',error:'同步未完成'};
+function showCloud(state){
+ cloudState=state;
+ $('cloudBadge').textContent=cloudPhaseLabels[state.phase]||'已连接';
+ $('cloudBadge').className='tag cloud-badge '+(state.phase||'');
+ $('cloudMessage').textContent=state.message||'正在连接';
+ $('cloudMessage').className='cloud-message '+(state.phase||'');
+ const details=[];
+ if(state.library)details.push(`资料库：${state.library}`);
+ if(state.remote_count!=null)details.push(`云端 ${state.remote_count} 条记录`);
+ if(state.last_sync)details.push('上次同步：'+new Date(state.last_sync).toLocaleString('zh-CN'));
+ $('cloudDetails').textContent=details.join('　');
+ const form=$('cloudForm');
+ if(!form.contains(document.activeElement)){form.elements.server.value=state.server;form.elements.folder.value=state.folder;form.elements.auto.checked=state.configured?state.auto:true;}
+ form.elements.token.placeholder=state.configured?'已加密保存，留空保持当前令牌':'填写 40 位读写资料库令牌';
+ $('cloudTokenHint').textContent=state.configured?'令牌已加密保存。如需更换，可重新填写。':'令牌使用 Windows 用户加密保存在本机。';
+ for(const id of ['cloudSync','cloudUpload','cloudDownload','cloudDisconnect'])$(id).disabled=!state.configured||cloudBusy||state.phase==='syncing';
+ $('cloudConnect').disabled=cloudBusy;
+ $('storageLabel').textContent=state.configured?'本机 + 清华云盘':'本地保存';
+ $('storageStatus').textContent=state.configured?(state.message||'等待同步'):'每次修改前自动备份';
+ $('storageDot').style.background=['error','conflict'].includes(state.phase)?'#e4ad58':'#4ac5a0';
+}
+async function refreshCloud(){if(cloudBusy)return;try{const previous=cloudState;const state=await api('/api/cloud/status');showCloud(state);if(state.last_sync&&state.last_sync!==previous?.last_sync&&state.last_action==='download')await load();}catch{}}
+$('cloudForm').onsubmit=async e=>{e.preventDefault();cloudBusy=true;let succeeded=false;try{const values=Object.fromEntries(new FormData(e.target));values.auto=e.target.elements.auto.checked;showCloud(await api('/api/cloud/configure',values));e.target.elements.token.value='';succeeded=true;toast('已连接清华云盘');}catch(error){toast(error.message);if(cloudState)showCloud({...cloudState,phase:'error',message:error.message});}finally{cloudBusy=false;$('cloudConnect').disabled=false;if(succeeded)await refreshCloud();}};
+async function syncCloud(mode){
+ if(mode==='upload'&&!confirm('用本机档案更新云端？云端现有档案会先保存为历史备份。'))return;
+ if(mode==='download'&&!confirm('读取云端档案并替换本机记录？本机现有档案会先备份。'))return;
+ cloudBusy=true;if(cloudState)showCloud({...cloudState,phase:'syncing',message:'正在连接清华云盘，请稍候…'});
+ try{const state=await api('/api/cloud/sync',{mode});showCloud(state);await load();toast(state.message);}catch(error){toast(error.message);}finally{cloudBusy=false;await refreshCloud();}
+}
+$('cloudSync').onclick=()=>syncCloud('auto');$('cloudUpload').onclick=()=>syncCloud('upload');$('cloudDownload').onclick=()=>syncCloud('download');
+$('cloudDisconnect').onclick=async()=>{if(!confirm('断开本机云盘连接？本机记录和云端文件会保留。'))return;try{showCloud(await api('/api/cloud/disconnect',{}));toast('已断开云盘连接');}catch(error){toast(error.message);}};
+refreshCloud();setInterval(refreshCloud,5000);
