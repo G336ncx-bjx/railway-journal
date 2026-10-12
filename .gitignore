@@ -1,0 +1,28 @@
+# 个人记录与票据
+data/
+personal_import_notes.md
+*.sqlite3
+*.sqlite3-*
+*.xlsx
+*.xls
+*.csv
+*.json
+preview-*.png
+tests/test_local_import.py
+tests/check_ui.cjs
+
+# 本地运行和构建文件
+__pycache__/
+*.py[cod]
+*.log
+.build-venv/
+.venv/
+build/
+dist/
+*.spec
+tmp*/
+.release-notes.md
+tests/check_packaged.cjs
+tests/check_packaged_native.cjs
+tests/close_test_windows.py
+tests/package-test-data/
