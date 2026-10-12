@@ -182,7 +182,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         if path == '/api/info':
-            return self.send({'app':'railway-journal','version':'1.0.1','data_dir':str(ROOT)})
+            return self.send({'app':'railway-journal','version':'1.0.2','data_dir':str(ROOT)})
         if path == '/api/records':
             data = snapshot()
             data['records'] = [enriched(r) for r in data['records']]
