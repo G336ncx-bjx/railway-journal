@@ -38,7 +38,7 @@ def open_window(url):
         webview.settings['REMOTE_DEBUGGING_PORT']=9224
         webview.settings['OPEN_DEVTOOLS_IN_DEBUG']=False
     webview.create_window('铁道手记',url,width=1280,height=860,min_size=(900,600),background_color='#f5f6f8',text_select=True)
-    webview.start(gui='edgechromium',private_mode=True,storage_path=str(app.ROOT/'window-profile'))
+    webview.start(gui='edgechromium',private_mode=True,storage_path=str(app.ROOT/'window-profile'),icon=str(app.ASSETS/'web'/'logo.ico'))
 
 def existing_url():
     opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))

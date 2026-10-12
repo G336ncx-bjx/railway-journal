@@ -182,7 +182,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         if path == '/api/info':
-            return self.send({'app':'railway-journal','version':'1.0.0','data_dir':str(ROOT)})
+            return self.send({'app':'railway-journal','version':'1.0.1','data_dir':str(ROOT)})
         if path == '/api/records':
             data = snapshot()
             data['records'] = [enriched(r) for r in data['records']]
@@ -214,11 +214,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(p.read_bytes(), mimetypes.guess_type(str(p))[0] or 'application/octet-stream')
             except (ValueError, OSError) as e:
                 return self.send({'error':str(e)}, status=404)
-        files = {'/':'index.html', '/app.js':'app.js', '/style.css':'style.css'}
+        files = {'/':'index.html', '/app.js':'app.js', '/style.css':'style.css', '/logo.png':'logo.png', '/favicon.ico':'logo.ico'}
         if path in files:
             import mimetypes
             p = ASSETS / 'web' / files[path]
-            return self.send(p.read_bytes(), (mimetypes.guess_type(str(p))[0] or 'text/plain') + '; charset=utf-8')
+            content = mimetypes.guess_type(str(p))[0] or 'application/octet-stream'
+            if p.suffix in ('.html', '.js', '.css'):
+                content += '; charset=utf-8'
+            return self.send(p.read_bytes(), content)
         self.send({'error':'未找到'}, status=404)
 
     def do_POST(self):
